@@ -5,3 +5,7 @@ authors = ["Micah Johnston <micah@photophore.systems>"]
 edition = "2018"
 
 [dependencies]
+
+[[example]]
+name = "gain"
+crate-type = ["cdylib"]
