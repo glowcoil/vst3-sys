@@ -323,7 +323,7 @@ pub struct RoutingInfo {
 pub struct IComponent {
     pub plugin_base: IPluginBase,
     pub get_controller_class_id:
-        unsafe extern "system" fn(this: *mut c_void, class_id: *const TUID) -> TResult,
+        unsafe extern "system" fn(this: *mut c_void, class_id: *mut TUID) -> TResult,
     pub set_io_mode: unsafe extern "system" fn(this: *mut c_void, mode: IoMode) -> TResult,
     pub get_bus_count: unsafe extern "system" fn(
         this: *mut c_void,
