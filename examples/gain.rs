@@ -1,7 +1,10 @@
 use vst3_sys::*;
 
 use std::ffi::{c_void, CString};
+use std::mem;
 use std::os::raw::c_char;
+use std::sync::atomic;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
     let c_string = CString::new(src).unwrap_or_else(|_| CString::default());
@@ -33,12 +36,334 @@ fn copy_wstring(src: &str, dst: &mut [i16]) {
 }
 
 #[repr(C)]
-struct GainProcessor {}
+struct GainProcessor {
+    component: *const IComponent,
+    audio_processor: *const IAudioProcessor,
+    count: AtomicU32,
+}
 
 impl GainProcessor {
     const CID: TUID = uid(0x367C3805, 0x446D40DA, 0x82E6BBB4, 0x900BC212);
     const NAME: &'static str = "Gain";
+
+    const COMPONENT_OFFSET: isize = 0;
+    const AUDIO_PROCESSOR_OFFSET: isize =
+        Self::COMPONENT_OFFSET + mem::size_of::<*const IComponent>() as isize;
+
+    fn create_instance() -> *mut GainProcessor {
+        Box::into_raw(Box::new(GainProcessor {
+            component: &COMPONENT_VTABLE,
+            audio_processor: &AUDIO_PROCESSOR_VTABLE,
+            count: AtomicU32::new(1),
+        }))
+    }
+
+    unsafe fn query_interface(
+        this: *mut c_void,
+        iid: *const TUID,
+        obj: *mut *mut c_void,
+    ) -> TResult {
+        let iid = *iid;
+
+        if iid == FUnknown::IID || iid == IComponent::IID {
+            Self::add_ref(this);
+            *obj = this.offset(Self::COMPONENT_OFFSET);
+            return result::OK;
+        }
+
+        if iid == IAudioProcessor::IID {
+            Self::add_ref(this);
+            *obj = this.offset(Self::AUDIO_PROCESSOR_OFFSET);
+            return result::OK;
+        }
+
+        result::NO_INTERFACE
+    }
+
+    unsafe fn add_ref(this: *mut c_void) -> u32 {
+        (*(this as *const GainProcessor)).count.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    unsafe fn release(this: *mut c_void) -> u32 {
+        let count = (*(this as *const GainProcessor)).count.fetch_sub(1, Ordering::Release) - 1;
+
+        if count == 0 {
+            atomic::fence(Ordering::Acquire);
+            drop(Box::from_raw(this as *mut GainProcessor));
+        }
+
+        count
+    }
+
+    unsafe extern "system" fn component_query_interface(
+        this: *mut c_void,
+        iid: *const TUID,
+        obj: *mut *mut c_void,
+    ) -> TResult {
+        Self::query_interface(this.offset(-Self::COMPONENT_OFFSET), iid, obj)
+    }
+
+    unsafe extern "system" fn component_add_ref(this: *mut c_void) -> u32 {
+        Self::add_ref(this.offset(-Self::COMPONENT_OFFSET))
+    }
+
+    unsafe extern "system" fn component_release(this: *mut c_void) -> u32 {
+        Self::release(this.offset(-Self::COMPONENT_OFFSET))
+    }
+
+    unsafe extern "system" fn component_initialize(
+        _this: *mut c_void,
+        _context: *mut FUnknown,
+    ) -> TResult {
+        result::OK
+    }
+
+    unsafe extern "system" fn component_terminate(_this: *mut c_void) -> TResult {
+        result::OK
+    }
+
+    unsafe extern "system" fn get_controller_class_id(
+        _this: *mut c_void,
+        class_id: *mut TUID,
+    ) -> TResult {
+        *class_id = GainController::CID;
+        result::OK
+    }
+
+    unsafe extern "system" fn set_io_mode(_this: *mut c_void, _mode: IoMode) -> TResult {
+        result::OK
+    }
+
+    unsafe extern "system" fn get_bus_count(
+        _this: *mut c_void,
+        media_type: MediaType,
+        dir: BusDirection,
+    ) -> i32 {
+        match media_type {
+            media_types::AUDIO => match dir {
+                bus_directions::INPUT => 1,
+                bus_directions::OUTPUT => 1,
+                _ => 0,
+            },
+            media_types::EVENT => 0,
+            _ => 0,
+        }
+    }
+
+    unsafe extern "system" fn get_bus_info(
+        _this: *mut c_void,
+        media_type: MediaType,
+        dir: BusDirection,
+        index: i32,
+        bus: *mut BusInfo,
+    ) -> TResult {
+        match media_type {
+            media_types::AUDIO => match dir {
+                bus_directions::INPUT => match index {
+                    0 => {
+                        let bus = &mut *bus;
+
+                        bus.media_type = media_types::AUDIO;
+                        bus.direction = bus_directions::INPUT;
+                        bus.channel_count = 2;
+                        copy_wstring("Input", &mut bus.name);
+                        bus.bus_type = bus_types::MAIN;
+                        bus.flags = BusInfo::DEFAULT_ACTIVE;
+
+                        result::OK
+                    }
+                    _ => result::INVALID_ARGUMENT,
+                },
+                bus_directions::OUTPUT => match index {
+                    0 => {
+                        let bus = &mut *bus;
+
+                        bus.media_type = media_types::AUDIO;
+                        bus.direction = bus_directions::OUTPUT;
+                        bus.channel_count = 2;
+                        copy_wstring("Output", &mut bus.name);
+                        bus.bus_type = bus_types::MAIN;
+                        bus.flags = BusInfo::DEFAULT_ACTIVE;
+
+                        result::OK
+                    }
+                    _ => result::INVALID_ARGUMENT,
+                },
+                _ => result::INVALID_ARGUMENT,
+            },
+            media_types::EVENT => result::INVALID_ARGUMENT,
+            _ => result::INVALID_ARGUMENT,
+        }
+    }
+
+    unsafe extern "system" fn get_routing_info(
+        _this: *mut c_void,
+        _in_info: *mut RoutingInfo,
+        _out_info: *mut RoutingInfo,
+    ) -> TResult {
+        result::NOT_IMPLEMENTED
+    }
+
+    unsafe extern "system" fn activate_bus(
+        _this: *mut c_void,
+        _media_type: MediaType,
+        _dir: BusDirection,
+        _index: i32,
+        _state: TBool,
+    ) -> TResult {
+        result::OK
+    }
+
+    unsafe extern "system" fn set_active(_this: *mut c_void, _state: TBool) -> TResult {
+        result::OK
+    }
+
+    unsafe extern "system" fn component_set_state(
+        _this: *mut c_void,
+        _state: *mut IBStream,
+    ) -> TResult {
+        result::OK
+    }
+
+    unsafe extern "system" fn component_get_state(
+        _this: *mut c_void,
+        _state: *mut IBStream,
+    ) -> TResult {
+        result::OK
+    }
+
+    unsafe extern "system" fn audio_processor_query_interface(
+        this: *mut c_void,
+        iid: *const TUID,
+        obj: *mut *mut c_void,
+    ) -> TResult {
+        Self::query_interface(this.offset(-Self::AUDIO_PROCESSOR_OFFSET), iid, obj)
+    }
+
+    unsafe extern "system" fn audio_processor_add_ref(this: *mut c_void) -> u32 {
+        Self::add_ref(this.offset(-Self::AUDIO_PROCESSOR_OFFSET))
+    }
+
+    unsafe extern "system" fn audio_processor_release(this: *mut c_void) -> u32 {
+        Self::release(this.offset(-Self::AUDIO_PROCESSOR_OFFSET))
+    }
+
+    unsafe extern "system" fn set_bus_arrangements(
+        _this: *mut c_void,
+        inputs: *const SpeakerArrangement,
+        num_ins: i32,
+        outputs: *const SpeakerArrangement,
+        num_outs: i32,
+    ) -> TResult {
+        if num_ins != 1 || num_outs != 1 {
+            return result::FALSE;
+        }
+
+        if *inputs != speaker_arrangements::STEREO || *outputs != speaker_arrangements::STEREO {
+            return result::FALSE;
+        }
+
+        result::TRUE
+    }
+
+    unsafe extern "system" fn get_bus_arrangement(
+        _this: *mut c_void,
+        dir: BusDirection,
+        index: i32,
+        arr: *mut SpeakerArrangement,
+    ) -> TResult {
+        match dir {
+            bus_directions::INPUT => {
+                if index == 0 {
+                    *arr = speaker_arrangements::STEREO;
+                    result::OK
+                } else {
+                    result::INVALID_ARGUMENT
+                }
+            }
+            bus_directions::OUTPUT => {
+                if index == 0 {
+                    *arr = speaker_arrangements::STEREO;
+                    result::OK
+                } else {
+                    result::INVALID_ARGUMENT
+                }
+            }
+            _ => result::INVALID_ARGUMENT,
+        }
+    }
+
+    unsafe extern "system" fn can_process_sample_size(
+        _this: *mut c_void,
+        symbolic_sample_size: i32,
+    ) -> TResult {
+        match symbolic_sample_size {
+            symbolic_sample_sizes::SAMPLE_32 => result::OK,
+            symbolic_sample_sizes::SAMPLE_64 => result::NOT_IMPLEMENTED,
+            _ => result::INVALID_ARGUMENT,
+        }
+    }
+
+    unsafe extern "system" fn get_latency_samples(_this: *mut c_void) -> u32 {
+        0
+    }
+
+    unsafe extern "system" fn setup_processing(
+        _this: *mut c_void,
+        _setup: *mut ProcessSetup,
+    ) -> TResult {
+        result::OK
+    }
+
+    unsafe extern "system" fn set_processing(_this: *mut c_void, _state: TBool) -> TResult {
+        result::OK
+    }
+
+    unsafe extern "system" fn process(_this: *mut c_void, _data: *mut ProcessData) -> TResult {
+        result::OK
+    }
+
+    unsafe extern "system" fn get_tail_samples(_this: *mut c_void) -> u32 {
+        0
+    }
 }
+
+static COMPONENT_VTABLE: IComponent = IComponent {
+    plugin_base: IPluginBase {
+        unknown: FUnknown {
+            query_interface: GainProcessor::component_query_interface,
+            add_ref: GainProcessor::component_add_ref,
+            release: GainProcessor::component_release,
+        },
+        initialize: GainProcessor::component_initialize,
+        terminate: GainProcessor::component_terminate,
+    },
+    get_controller_class_id: GainProcessor::get_controller_class_id,
+    set_io_mode: GainProcessor::set_io_mode,
+    get_bus_count: GainProcessor::get_bus_count,
+    get_bus_info: GainProcessor::get_bus_info,
+    get_routing_info: GainProcessor::get_routing_info,
+    activate_bus: GainProcessor::activate_bus,
+    set_active: GainProcessor::set_active,
+    set_state: GainProcessor::component_set_state,
+    get_state: GainProcessor::component_get_state,
+};
+
+static AUDIO_PROCESSOR_VTABLE: IAudioProcessor = IAudioProcessor {
+    unknown: FUnknown {
+        query_interface: GainProcessor::audio_processor_query_interface,
+        add_ref: GainProcessor::audio_processor_add_ref,
+        release: GainProcessor::audio_processor_release,
+    },
+    set_bus_arrangements: GainProcessor::set_bus_arrangements,
+    get_bus_arrangement: GainProcessor::get_bus_arrangement,
+    can_process_sample_size: GainProcessor::can_process_sample_size,
+    get_latency_samples: GainProcessor::get_latency_samples,
+    setup_processing: GainProcessor::setup_processing,
+    set_processing: GainProcessor::set_processing,
+    process: GainProcessor::process,
+    get_tail_samples: GainProcessor::get_tail_samples,
+};
 
 #[repr(C)]
 struct GainController {}
@@ -131,11 +456,29 @@ impl Factory {
 
     unsafe extern "system" fn create_instance(
         _this: *mut c_void,
-        _cid: *const c_char,
-        _iid: *const c_char,
-        _obj: *mut *mut c_void,
+        cid: *const c_char,
+        iid: *const c_char,
+        obj: *mut *mut c_void,
     ) -> TResult {
-        result::NOT_IMPLEMENTED
+        let instance = match *(cid as *const TUID) {
+            GainProcessor::CID => Some(GainProcessor::create_instance() as *mut *const FUnknown),
+            // GainController::CID => Some(GainController::create_instance() as *mut *const FUnknown),
+            _ => None,
+        };
+
+        if let Some(instance) = instance {
+            let result =
+                ((*(*instance)).query_interface)(instance as *mut c_void, iid as *const TUID, obj);
+            if result == result::OK {
+                ((*(*instance)).release)(instance as *mut c_void);
+                result::OK
+            } else {
+                ((*(*instance)).release)(instance as *mut c_void);
+                result::NO_INTERFACE
+            }
+        } else {
+            result::INVALID_ARGUMENT
+        }
     }
 
     unsafe extern "system" fn get_class_info_2(
@@ -241,9 +584,7 @@ static PLUGIN_FACTORY_3_VTABLE: IPluginFactory3 = IPluginFactory3 {
     set_host_context: Factory::set_host_context,
 };
 
-static PLUGIN_FACTORY: Factory = Factory {
-    plugin_factory_3: &PLUGIN_FACTORY_3_VTABLE,
-};
+static PLUGIN_FACTORY: Factory = Factory { plugin_factory_3: &PLUGIN_FACTORY_3_VTABLE };
 
 #[cfg(target_os = "windows")]
 #[no_mangle]
