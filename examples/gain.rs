@@ -65,7 +65,7 @@ impl GainProcessor {
     ) -> TResult {
         let iid = *iid;
 
-        if iid == FUnknown::IID || iid == IComponent::IID {
+        if iid == FUnknown::IID || iid == IPluginBase::IID || iid == IComponent::IID {
             Self::add_ref(this);
             *obj = this.offset(Self::COMPONENT_OFFSET);
             return result::OK;
