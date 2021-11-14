@@ -39,6 +39,7 @@ fn copy_wstring(src: &str, dst: &mut [i16]) {
 struct GainProcessor {
     component: *const IComponent,
     audio_processor: *const IAudioProcessor,
+    process_context_requirements: *const IProcessContextRequirements,
     count: AtomicU32,
 }
 
@@ -49,11 +50,14 @@ impl GainProcessor {
     const COMPONENT_OFFSET: isize = 0;
     const AUDIO_PROCESSOR_OFFSET: isize =
         Self::COMPONENT_OFFSET + mem::size_of::<*const IComponent>() as isize;
+    const PROCESS_CONTEXT_REQUIREMENTS_OFFSET: isize =
+        Self::AUDIO_PROCESSOR_OFFSET + mem::size_of::<*const IAudioProcessor>() as isize;
 
     fn create_instance() -> *mut GainProcessor {
         Box::into_raw(Box::new(GainProcessor {
             component: &COMPONENT_VTABLE,
             audio_processor: &AUDIO_PROCESSOR_VTABLE,
+            process_context_requirements: &PROCESS_CONTEXT_REQUIREMENTS_VTABLE,
             count: AtomicU32::new(1),
         }))
     }
@@ -74,6 +78,12 @@ impl GainProcessor {
         if iid == IAudioProcessor::IID {
             Self::add_ref(this);
             *obj = this.offset(Self::AUDIO_PROCESSOR_OFFSET);
+            return result::OK;
+        }
+
+        if iid == IProcessContextRequirements::IID {
+            Self::add_ref(this);
+            *obj = this.offset(Self::PROCESS_CONTEXT_REQUIREMENTS_OFFSET);
             return result::OK;
         }
 
@@ -326,6 +336,26 @@ impl GainProcessor {
     unsafe extern "system" fn get_tail_samples(_this: *mut c_void) -> u32 {
         0
     }
+
+    pub unsafe extern "system" fn process_context_requirements_query_interface(
+        this: *mut c_void,
+        iid: *const TUID,
+        obj: *mut *mut c_void,
+    ) -> TResult {
+        Self::query_interface(this.offset(-Self::PROCESS_CONTEXT_REQUIREMENTS_OFFSET), iid, obj)
+    }
+
+    pub unsafe extern "system" fn process_context_requirements_add_ref(this: *mut c_void) -> u32 {
+        Self::add_ref(this.offset(-Self::PROCESS_CONTEXT_REQUIREMENTS_OFFSET))
+    }
+
+    pub unsafe extern "system" fn process_context_requirements_release(this: *mut c_void) -> u32 {
+        Self::release(this.offset(-Self::PROCESS_CONTEXT_REQUIREMENTS_OFFSET))
+    }
+
+    pub unsafe extern "system" fn get_process_context_requirements(_this: *mut c_void) -> u32 {
+        0
+    }
 }
 
 static COMPONENT_VTABLE: IComponent = IComponent {
@@ -364,6 +394,16 @@ static AUDIO_PROCESSOR_VTABLE: IAudioProcessor = IAudioProcessor {
     process: GainProcessor::process,
     get_tail_samples: GainProcessor::get_tail_samples,
 };
+
+static PROCESS_CONTEXT_REQUIREMENTS_VTABLE: IProcessContextRequirements =
+    IProcessContextRequirements {
+        unknown: FUnknown {
+            query_interface: GainProcessor::process_context_requirements_query_interface,
+            add_ref: GainProcessor::process_context_requirements_add_ref,
+            release: GainProcessor::process_context_requirements_release,
+        },
+        get_process_context_requirements: GainProcessor::get_process_context_requirements,
+    };
 
 #[repr(C)]
 struct GainController {
