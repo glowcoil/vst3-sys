@@ -18,6 +18,36 @@ fn copy_cstring(src: &str, dst: &mut [c_char]) {
     }
 }
 
+fn copy_wstring(src: &str, dst: &mut [i16]) {
+    let mut len = 0;
+    for (src, dst) in src.encode_utf16().zip(dst.iter_mut()) {
+        *dst = src as i16;
+        len += 1;
+    }
+
+    if len < dst.len() {
+        dst[len] = 0;
+    } else if let Some(last) = dst.last_mut() {
+        *last = 0;
+    }
+}
+
+#[repr(C)]
+struct GainProcessor {}
+
+impl GainProcessor {
+    const CID: TUID = uid(0x367C3805, 0x446D40DA, 0x82E6BBB4, 0x900BC212);
+    const NAME: &'static str = "Gain";
+}
+
+#[repr(C)]
+struct GainController {}
+
+impl GainController {
+    const CID: TUID = uid(0xD93CC3FD, 0xDBFE459A, 0xAAE03612, 0xF9AF088E);
+    const NAME: &'static str = "Gain Controller";
+}
+
 #[repr(C)]
 struct Factory {
     plugin_factory_3: *const IPluginFactory3,
@@ -68,15 +98,35 @@ impl Factory {
     }
 
     unsafe extern "system" fn count_classes(_this: *mut c_void) -> i32 {
-        0
+        2
     }
 
     unsafe extern "system" fn get_class_info(
         _this: *mut c_void,
-        _index: i32,
-        _info: *mut PClassInfo,
+        index: i32,
+        info: *mut PClassInfo,
     ) -> TResult {
-        result::NOT_IMPLEMENTED
+        match index {
+            0 => {
+                let info = &mut *info;
+                info.cid = GainProcessor::CID;
+                info.cardinality = PClassInfo::MANY_INSTANCES;
+                copy_cstring("Audio Module Class", &mut info.category);
+                copy_cstring(GainProcessor::NAME, &mut info.name);
+            }
+            1 => {
+                let info = &mut *info;
+                info.cid = GainController::CID;
+                info.cardinality = PClassInfo::MANY_INSTANCES;
+                copy_cstring("Component Controller Class", &mut info.category);
+                copy_cstring(GainController::NAME, &mut info.name);
+            }
+            _ => {
+                return result::INVALID_ARGUMENT;
+            }
+        }
+
+        result::OK
     }
 
     unsafe extern "system" fn create_instance(
@@ -90,18 +140,78 @@ impl Factory {
 
     unsafe extern "system" fn get_class_info_2(
         _this: *mut c_void,
-        _index: i32,
-        _info: *mut PClassInfo2,
+        index: i32,
+        info: *mut PClassInfo2,
     ) -> TResult {
-        result::NOT_IMPLEMENTED
+        match index {
+            0 => {
+                let info = &mut *info;
+                info.cid = GainProcessor::CID;
+                info.cardinality = PClassInfo::MANY_INSTANCES;
+                copy_cstring("Audio Module Class", &mut info.category);
+                copy_cstring(GainProcessor::NAME, &mut info.name);
+                info.class_flags = component_flags::DISTRIBUTABLE;
+                copy_cstring("Fx", &mut info.sub_categories);
+                copy_cstring("Vendor", &mut info.vendor);
+                copy_cstring("0.1.0", &mut info.version);
+                copy_cstring("VST 3.7.1", &mut info.sdk_version);
+            }
+            1 => {
+                let info = &mut *info;
+                info.cid = GainController::CID;
+                info.cardinality = PClassInfo::MANY_INSTANCES;
+                copy_cstring("Component Controller Class", &mut info.category);
+                copy_cstring(GainProcessor::NAME, &mut info.name);
+                info.class_flags = 0;
+                copy_cstring("Fx", &mut info.sub_categories);
+                copy_cstring("Vendor", &mut info.vendor);
+                copy_cstring("0.1.0", &mut info.version);
+                copy_cstring("VST 3.7.1", &mut info.sdk_version);
+            }
+            _ => {
+                return result::INVALID_ARGUMENT;
+            }
+        }
+
+        result::OK
     }
 
     unsafe extern "system" fn get_class_info_unicode(
         _this: *mut c_void,
-        _index: i32,
-        _info: *mut PClassInfoW,
+        index: i32,
+        info: *mut PClassInfoW,
     ) -> TResult {
-        result::NOT_IMPLEMENTED
+        match index {
+            0 => {
+                let info = &mut *info;
+                info.cid = GainProcessor::CID;
+                info.cardinality = PClassInfo::MANY_INSTANCES;
+                copy_cstring("Audio Module Class", &mut info.category);
+                copy_wstring(GainProcessor::NAME, &mut info.name);
+                info.class_flags = component_flags::DISTRIBUTABLE;
+                copy_cstring("Fx", &mut info.sub_categories);
+                copy_wstring("Vendor", &mut info.vendor);
+                copy_wstring("0.1.0", &mut info.version);
+                copy_wstring("VST 3.7", &mut info.sdk_version);
+            }
+            1 => {
+                let info = &mut *info;
+                info.cid = GainController::CID;
+                info.cardinality = PClassInfo::MANY_INSTANCES;
+                copy_cstring("Component Controller Class", &mut info.category);
+                copy_wstring(GainController::NAME, &mut info.name);
+                info.class_flags = component_flags::DISTRIBUTABLE;
+                copy_cstring("Fx", &mut info.sub_categories);
+                copy_wstring("Vendor", &mut info.vendor);
+                copy_wstring("0.1.0", &mut info.version);
+                copy_wstring("VST 3.7", &mut info.sdk_version);
+            }
+            _ => {
+                return result::INVALID_ARGUMENT;
+            }
+        }
+
+        result::OK
     }
 
     unsafe extern "system" fn set_host_context(
