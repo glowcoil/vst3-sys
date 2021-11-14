@@ -1,10 +1,10 @@
 use vst3_sys::*;
 
 use std::ffi::{c_void, CString};
-use std::mem;
 use std::os::raw::c_char;
 use std::sync::atomic;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::{mem, ptr};
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
     let c_string = CString::new(src).unwrap_or_else(|_| CString::default());
@@ -366,12 +366,216 @@ static AUDIO_PROCESSOR_VTABLE: IAudioProcessor = IAudioProcessor {
 };
 
 #[repr(C)]
-struct GainController {}
+struct GainController {
+    edit_controller: *const IEditController,
+    count: AtomicU32,
+}
 
 impl GainController {
     const CID: TUID = uid(0xD93CC3FD, 0xDBFE459A, 0xAAE03612, 0xF9AF088E);
     const NAME: &'static str = "Gain Controller";
+
+    const EDIT_CONTROLLER_OFFSET: isize = 0;
+
+    fn create_instance() -> *mut GainController {
+        Box::into_raw(Box::new(GainController {
+            edit_controller: &EDIT_CONTROLLER_VTABLE,
+            count: AtomicU32::new(1),
+        }))
+    }
+
+    unsafe fn query_interface(
+        this: *mut c_void,
+        iid: *const TUID,
+        obj: *mut *mut c_void,
+    ) -> TResult {
+        let iid = *iid;
+
+        if iid == FUnknown::IID || iid == IEditController::IID {
+            Self::add_ref(this);
+            *obj = this.offset(Self::EDIT_CONTROLLER_OFFSET);
+            return result::OK;
+        }
+
+        result::NO_INTERFACE
+    }
+
+    unsafe fn add_ref(this: *mut c_void) -> u32 {
+        (*(this as *const GainController)).count.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    unsafe fn release(this: *mut c_void) -> u32 {
+        let count = (*(this as *const GainController)).count.fetch_sub(1, Ordering::Release) - 1;
+
+        if count == 0 {
+            atomic::fence(Ordering::Acquire);
+            drop(Box::from_raw(this as *mut GainController));
+        }
+
+        count
+    }
+
+    pub unsafe extern "system" fn edit_controller_query_interface(
+        this: *mut c_void,
+        iid: *const TUID,
+        obj: *mut *mut c_void,
+    ) -> TResult {
+        Self::query_interface(this.offset(-Self::EDIT_CONTROLLER_OFFSET), iid, obj)
+    }
+
+    pub unsafe extern "system" fn edit_controller_add_ref(this: *mut c_void) -> u32 {
+        Self::add_ref(this.offset(-Self::EDIT_CONTROLLER_OFFSET))
+    }
+
+    pub unsafe extern "system" fn edit_controller_release(this: *mut c_void) -> u32 {
+        Self::release(this.offset(-Self::EDIT_CONTROLLER_OFFSET))
+    }
+
+    pub unsafe extern "system" fn edit_controller_initialize(
+        _this: *mut c_void,
+        _context: *mut FUnknown,
+    ) -> TResult {
+        result::OK
+    }
+
+    pub unsafe extern "system" fn edit_controller_terminate(_this: *mut c_void) -> TResult {
+        result::OK
+    }
+
+    pub unsafe extern "system" fn set_component_state(
+        _this: *mut c_void,
+        _state: *mut *const IBStream,
+    ) -> TResult {
+        result::NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn edit_controller_set_state(
+        _this: *mut c_void,
+        _state: *mut *const IBStream,
+    ) -> TResult {
+        result::OK
+    }
+
+    pub unsafe extern "system" fn edit_controller_get_state(
+        _this: *mut c_void,
+        _state: *mut *const IBStream,
+    ) -> TResult {
+        result::OK
+    }
+
+    pub unsafe extern "system" fn get_parameter_count(_this: *mut c_void) -> i32 {
+        1
+    }
+
+    pub unsafe extern "system" fn get_parameter_info(
+        _this: *mut c_void,
+        param_index: i32,
+        info: *mut ParameterInfo,
+    ) -> TResult {
+        match param_index {
+            0 => {
+                let info = &mut *info;
+
+                info.id = 0;
+                copy_wstring("Gain", &mut info.title);
+                copy_wstring("Gain", &mut info.short_title);
+                copy_wstring("", &mut info.units);
+                info.step_count = 0;
+                info.default_normalized_value = 1.0;
+                info.unit_id = 0;
+                info.flags = ParameterInfo::CAN_AUTOMATE;
+
+                result::OK
+            }
+            _ => result::INVALID_ARGUMENT,
+        }
+    }
+
+    pub unsafe extern "system" fn get_param_string_by_value(
+        _this: *mut c_void,
+        _id: u32,
+        _value_normalized: f64,
+        _string: *mut String128,
+    ) -> TResult {
+        result::OK
+    }
+
+    pub unsafe extern "system" fn get_param_value_by_string(
+        _this: *mut c_void,
+        _id: u32,
+        _string: *const TChar,
+        _value_normalized: *mut f64,
+    ) -> TResult {
+        result::OK
+    }
+
+    pub unsafe extern "system" fn normalized_param_to_plain(
+        _this: *mut c_void,
+        _id: u32,
+        _value_normalized: f64,
+    ) -> f64 {
+        0.0
+    }
+
+    pub unsafe extern "system" fn plain_param_to_normalized(
+        _this: *mut c_void,
+        _id: u32,
+        _plain_value: f64,
+    ) -> f64 {
+        0.0
+    }
+
+    pub unsafe extern "system" fn get_param_normalized(_this: *mut c_void, _id: u32) -> f64 {
+        0.0
+    }
+
+    pub unsafe extern "system" fn set_param_normalized(
+        _this: *mut c_void,
+        _id: u32,
+        _value: f64,
+    ) -> TResult {
+        result::OK
+    }
+
+    pub unsafe extern "system" fn set_component_handler(
+        _this: *mut c_void,
+        _handler: *mut *const IComponentHandler,
+    ) -> TResult {
+        result::OK
+    }
+
+    pub unsafe extern "system" fn create_view(
+        _this: *mut c_void,
+        _name: *const c_char,
+    ) -> *mut *const IPlugView {
+        ptr::null_mut()
+    }
 }
+
+static EDIT_CONTROLLER_VTABLE: IEditController = IEditController {
+    plugin_base: IPluginBase {
+        unknown: FUnknown {
+            query_interface: GainController::edit_controller_query_interface,
+            add_ref: GainController::edit_controller_add_ref,
+            release: GainController::edit_controller_release,
+        },
+        initialize: GainController::edit_controller_initialize,
+        terminate: GainController::edit_controller_terminate,
+    },
+    set_component_state: GainController::set_component_state,
+    set_state: GainController::edit_controller_set_state,
+    get_state: GainController::edit_controller_get_state,
+    get_parameter_count: GainController::get_parameter_count,
+    get_parameter_info: GainController::get_parameter_info,
+    get_param_string_by_value: GainController::get_param_string_by_value,
+    get_param_value_by_string: GainController::get_param_value_by_string,
+    normalized_param_to_plain: GainController::normalized_param_to_plain,
+    plain_param_to_normalized: GainController::plain_param_to_normalized,
+    get_param_normalized: GainController::get_param_normalized,
+    set_param_normalized: GainController::set_param_normalized,
+    set_component_handler: GainController::set_component_handler,
+    create_view: GainController::create_view,
+};
 
 #[repr(C)]
 struct Factory {
@@ -462,7 +666,7 @@ impl Factory {
     ) -> TResult {
         let instance = match *(cid as *const TUID) {
             GainProcessor::CID => Some(GainProcessor::create_instance() as *mut *const FUnknown),
-            // GainController::CID => Some(GainController::create_instance() as *mut *const FUnknown),
+            GainController::CID => Some(GainController::create_instance() as *mut *const FUnknown),
             _ => None,
         };
 
