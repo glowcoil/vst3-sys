@@ -2,9 +2,10 @@ use vst3_sys::*;
 
 use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
+use std::str::FromStr;
 use std::sync::atomic;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::{mem, ptr};
+use std::{mem, ptr, slice};
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
     let c_string = CString::new(src).unwrap_or_else(|_| CString::default());
@@ -33,6 +34,16 @@ fn copy_wstring(src: &str, dst: &mut [i16]) {
     } else if let Some(last) = dst.last_mut() {
         *last = 0;
     }
+}
+
+unsafe fn len_wstring(string: *const i16) -> usize {
+    let mut len = 0;
+
+    while *string.offset(len) != 0 {
+        len += 1;
+    }
+
+    len as usize
 }
 
 #[repr(C)]
@@ -409,6 +420,7 @@ static PROCESS_CONTEXT_REQUIREMENTS_VTABLE: IProcessContextRequirements =
 struct GainController {
     edit_controller: *const IEditController,
     count: AtomicU32,
+    gain: f64,
 }
 
 impl GainController {
@@ -421,6 +433,7 @@ impl GainController {
         Box::into_raw(Box::new(GainController {
             edit_controller: &EDIT_CONTROLLER_VTABLE,
             count: AtomicU32::new(1),
+            gain: 1.0,
         }))
     }
 
@@ -533,48 +546,86 @@ impl GainController {
 
     pub unsafe extern "system" fn get_param_string_by_value(
         _this: *mut c_void,
-        _id: u32,
-        _value_normalized: f64,
-        _string: *mut String128,
+        id: u32,
+        value_normalized: f64,
+        string: *mut String128,
     ) -> TResult {
-        result::OK
+        match id {
+            0 => {
+                let display = value_normalized.to_string();
+                copy_wstring(&display, &mut *string);
+                result::OK
+            }
+            _ => result::INVALID_ARGUMENT,
+        }
     }
 
     pub unsafe extern "system" fn get_param_value_by_string(
         _this: *mut c_void,
-        _id: u32,
-        _string: *const TChar,
-        _value_normalized: *mut f64,
+        id: u32,
+        string: *const TChar,
+        value_normalized: *mut f64,
     ) -> TResult {
-        result::OK
+        match id {
+            0 => {
+                let len = len_wstring(string);
+                if let Ok(string) =
+                    String::from_utf16(slice::from_raw_parts(string as *const u16, len))
+                {
+                    if let Ok(value) = f64::from_str(&string) {
+                        *value_normalized = value;
+                        return result::OK;
+                    }
+                }
+                result::INVALID_ARGUMENT
+            }
+            _ => result::INVALID_ARGUMENT,
+        }
     }
 
     pub unsafe extern "system" fn normalized_param_to_plain(
         _this: *mut c_void,
-        _id: u32,
-        _value_normalized: f64,
+        id: u32,
+        value_normalized: f64,
     ) -> f64 {
-        0.0
+        match id {
+            0 => value_normalized,
+            _ => 0.0,
+        }
     }
 
     pub unsafe extern "system" fn plain_param_to_normalized(
         _this: *mut c_void,
-        _id: u32,
-        _plain_value: f64,
+        id: u32,
+        plain_value: f64,
     ) -> f64 {
-        0.0
+        match id {
+            0 => plain_value,
+            _ => 0.0,
+        }
     }
 
-    pub unsafe extern "system" fn get_param_normalized(_this: *mut c_void, _id: u32) -> f64 {
-        0.0
+    pub unsafe extern "system" fn get_param_normalized(this: *mut c_void, id: u32) -> f64 {
+        let controller = &*(this.offset(-Self::EDIT_CONTROLLER_OFFSET) as *const GainController);
+        match id {
+            0 => controller.gain,
+            _ => 0.0,
+        }
     }
 
     pub unsafe extern "system" fn set_param_normalized(
-        _this: *mut c_void,
-        _id: u32,
-        _value: f64,
+        this: *mut c_void,
+        id: u32,
+        value: f64,
     ) -> TResult {
-        result::OK
+        let controller = &mut *(this.offset(-Self::EDIT_CONTROLLER_OFFSET) as *mut GainController);
+        match id {
+            0 => {
+                controller.gain = value;
+                result::OK
+            }
+            _ => result::INVALID_ARGUMENT,
+        }
     }
 
     pub unsafe extern "system" fn set_component_handler(
