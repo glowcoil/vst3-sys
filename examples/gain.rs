@@ -4,7 +4,7 @@ use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
 use std::str::FromStr;
 use std::sync::atomic;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::{mem, ptr, slice};
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
@@ -52,6 +52,7 @@ struct GainProcessor {
     audio_processor: *const IAudioProcessor,
     process_context_requirements: *const IProcessContextRequirements,
     count: AtomicU32,
+    gain: AtomicU64,
 }
 
 impl GainProcessor {
@@ -70,6 +71,7 @@ impl GainProcessor {
             audio_processor: &AUDIO_PROCESSOR_VTABLE,
             process_context_requirements: &PROCESS_CONTEXT_REQUIREMENTS_VTABLE,
             count: AtomicU32::new(1),
+            gain: AtomicU64::new(1.0f64.to_bits()),
         }))
     }
 
@@ -239,17 +241,11 @@ impl GainProcessor {
         result::OK
     }
 
-    unsafe extern "system" fn component_set_state(
-        _this: *mut c_void,
-        _state: *mut IBStream,
-    ) -> TResult {
+    unsafe extern "system" fn set_state(_this: *mut c_void, _state: *mut IBStream) -> TResult {
         result::OK
     }
 
-    unsafe extern "system" fn component_get_state(
-        _this: *mut c_void,
-        _state: *mut IBStream,
-    ) -> TResult {
+    unsafe extern "system" fn get_state(_this: *mut c_void, _state: *mut IBStream) -> TResult {
         result::OK
     }
 
@@ -340,7 +336,84 @@ impl GainProcessor {
         result::OK
     }
 
-    unsafe extern "system" fn process(_this: *mut c_void, _data: *mut ProcessData) -> TResult {
+    unsafe extern "system" fn process(this: *mut c_void, data: *mut ProcessData) -> TResult {
+        let processor = &mut *(this.offset(-Self::AUDIO_PROCESSOR_OFFSET) as *mut GainProcessor);
+
+        let process_data = &*data;
+
+        let param_changes = process_data.input_parameter_changes;
+        if !param_changes.is_null() {
+            let param_count =
+                ((*(*param_changes)).get_parameter_count)(param_changes as *mut c_void);
+            for param_index in 0..param_count {
+                let param_queue = ((*(*param_changes)).get_parameter_data)(
+                    param_changes as *mut c_void,
+                    param_index,
+                );
+
+                if param_queue.is_null() {
+                    continue;
+                }
+
+                let param_id = ((*(*param_queue)).get_parameter_id)(param_queue as *mut c_void);
+                let point_count = ((*(*param_queue)).get_point_count)(param_queue as *mut c_void);
+
+                match param_id {
+                    0 => {
+                        let mut sample_offset = 0;
+                        let mut value = 0.0;
+                        let result = ((*(*param_queue)).get_point)(
+                            param_queue as *mut c_void,
+                            point_count - 1,
+                            &mut sample_offset,
+                            &mut value,
+                        );
+
+                        if result == result::TRUE {
+                            processor.gain.store(value.to_bits(), Ordering::Relaxed);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let gain = f64::from_bits(processor.gain.load(Ordering::Relaxed)) as f32;
+
+        let num_samples = process_data.num_samples as usize;
+
+        if process_data.num_inputs != 1 || process_data.num_outputs != 1 {
+            return result::OK;
+        }
+
+        let input_buses =
+            slice::from_raw_parts(process_data.inputs, process_data.num_inputs as usize);
+        let output_buses =
+            slice::from_raw_parts(process_data.outputs, process_data.num_outputs as usize);
+
+        if input_buses[0].num_channels != 2 || output_buses[0].num_channels != 2 {
+            return result::OK;
+        }
+
+        let input_channels = slice::from_raw_parts(
+            input_buses[0].channel_buffers as *const *const f32,
+            input_buses[0].num_channels as usize,
+        );
+        let output_channels = slice::from_raw_parts(
+            output_buses[0].channel_buffers as *mut *mut f32,
+            output_buses[0].num_channels as usize,
+        );
+
+        let input_l = slice::from_raw_parts(input_channels[0], num_samples);
+        let input_r = slice::from_raw_parts(input_channels[1], num_samples);
+        let output_l = slice::from_raw_parts_mut(output_channels[0], num_samples);
+        let output_r = slice::from_raw_parts_mut(output_channels[1], num_samples);
+
+        for i in 0..num_samples {
+             output_l[i] = gain * input_l[i];
+             output_r[i] = gain * input_r[i];
+        }
+
         result::OK
     }
 
@@ -386,8 +459,8 @@ static COMPONENT_VTABLE: IComponent = IComponent {
     get_routing_info: GainProcessor::get_routing_info,
     activate_bus: GainProcessor::activate_bus,
     set_active: GainProcessor::set_active,
-    set_state: GainProcessor::component_set_state,
-    get_state: GainProcessor::component_get_state,
+    set_state: GainProcessor::set_state,
+    get_state: GainProcessor::get_state,
 };
 
 static AUDIO_PROCESSOR_VTABLE: IAudioProcessor = IAudioProcessor {
