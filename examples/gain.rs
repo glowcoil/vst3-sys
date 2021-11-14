@@ -1,7 +1,22 @@
 use vst3_sys::*;
 
-use std::ffi::c_void;
+use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
+
+fn copy_cstring(src: &str, dst: &mut [c_char]) {
+    let c_string = CString::new(src).unwrap_or_else(|_| CString::default());
+    let bytes = c_string.as_bytes_with_nul();
+
+    for (src, dst) in bytes.iter().zip(dst.iter_mut()) {
+        *dst = *src as c_char;
+    }
+
+    if bytes.len() > dst.len() {
+        if let Some(last) = dst.last_mut() {
+            *last = 0;
+        }
+    }
+}
 
 #[repr(C)]
 struct Factory {
@@ -40,9 +55,16 @@ impl Factory {
 
     unsafe extern "system" fn get_factory_info(
         _this: *mut c_void,
-        _info: *mut PFactoryInfo,
+        info: *mut PFactoryInfo,
     ) -> TResult {
-        result::NOT_IMPLEMENTED
+        let info = &mut *info;
+
+        copy_cstring("Vendor", &mut info.vendor);
+        copy_cstring("https://example.com", &mut info.url);
+        copy_cstring("someone@example.com", &mut info.email);
+        info.flags = PFactoryInfo::UNICODE;
+
+        result::OK
     }
 
     unsafe extern "system" fn count_classes(_this: *mut c_void) -> i32 {
